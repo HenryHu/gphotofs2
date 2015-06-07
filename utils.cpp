@@ -11,15 +11,15 @@ int Now() {
 }
 
 void Error(const string& msg) {
-    cerr << msg << endl;
+    cerr << "ERR: " << msg << endl;
 }
 
 void Warn(const string& msg) {
-    cerr << msg << endl;
+    cerr << "WARN: " << msg << endl;
 }
 
 void Debug(const string& msg) {
-    cerr << msg << endl;
+    cerr << "DBG: " << msg << endl;
 }
 
 off_t SizeToBlocks(off_t size) {

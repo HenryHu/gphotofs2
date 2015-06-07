@@ -1,14 +1,14 @@
 #include <string>
-
-#include <fuse.h>
-#include <gphoto2/gphoto2.h>
-#include <libgen.h>
-
 #include <mutex>
 #include <vector>
 #include <memory>
 #include <map>
-#include <iostream>
+#include <cstdlib>
+
+#include <fuse.h>
+#include <gphoto2/gphoto2.h>
+#include <libgen.h>
+#include <locale.h>
 
 #include "dir.h"
 #include "file.h"
@@ -114,7 +114,6 @@ static int Create(const char *path, mode_t mode,
         CameraFile *camFile;
         gp_file_new(&camFile);
         file->camFile = camFile;
-        cerr << "file's camfile init to " << camFile << endl;
     }
 
     FileDesc *fd = new FileDesc();
@@ -131,7 +130,6 @@ static int Open(const char *path, struct fuse_file_info *fileInfo) {
     if (file == nullptr) {
         return -ENOENT;
     }
-    cerr << "open. file: " << file << endl;
     if (file->camFile == nullptr) {
         const char *dirName = dirname(path);
         const char *fileName = basename(path);
@@ -144,7 +142,6 @@ static int Open(const char *path, struct fuse_file_info *fileInfo) {
             return gpresultToErrno(ret);
         }
         file->camFile = camFile;
-        cerr << "file's camfile init to " << camFile << endl;
     }
     FileDesc *fd = new FileDesc();
     int mode = fileInfo->flags & 3;
@@ -203,7 +200,6 @@ static int Release(const char *path, struct fuse_file_info *fileInfo) {
 static int ReadWholeFile(File *file) {
     const char *data;
     unsigned long dataSize;
-    cerr << "camFile: " << file->camFile << endl;
     int ret = gp_file_get_data_and_size(file->camFile, &data, &dataSize);
     if (ret == GP_OK) {
         file->buf = new char[dataSize];
@@ -223,7 +219,6 @@ static int Read(const char *path, char *buf, size_t size, off_t offset,
     FileDesc *fd = (FileDesc *)fileInfo->fh;
     File *file = fd->file;
 
-    cerr << "file: " << file << endl;
     if (file->buf == nullptr) {
         int ret = ReadWholeFile(file);
         if (ret != 0) return ret;
