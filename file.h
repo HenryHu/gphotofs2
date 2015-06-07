@@ -39,9 +39,9 @@ struct File {
     ~File() {
         if (ref > 0) {
             Error("deleting active file");
-            if (buf) delete[] buf;
-            if (camFile) gp_file_unref(camFile);
         }
+        if (buf) delete[] buf;
+        if (camFile) gp_file_unref(camFile);
     }
 };
 
