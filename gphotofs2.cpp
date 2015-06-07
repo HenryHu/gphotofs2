@@ -2,14 +2,20 @@
 
 #include <fuse.h>
 #include <gphoto2/gphoto2.h>
+#include <libgen.h>
+
 #include <mutex>
 #include <vector>
 #include <memory>
 #include <map>
 #include <iostream>
 
-using namespace std;
+#include "dir.h"
+#include "file.h"
+#include "utils.h"
+#include "context.h"
 
+using namespace std;
 
 struct Options {
     string port;
@@ -18,166 +24,14 @@ struct Options {
     int speed;
 };
 
-struct File {
-    string name;
-    CameraFile *file;
-    void *buf;
-    off_t size;
+struct FileDesc {
     bool writeable;
-    string destdir;
-    string destname;
-    int mtime;
-
-    File(const string& name, const CameraFileInfo& info) {
-        this->name = name;
-        mtime = info.file.mtime;
-        size = info.file.size;
-    }
+    File *file;
 };
 
-struct Dir {
-    string name;
-
-    bool listed;
-    map<string, File*> files;
-    map<string, Dir*> dirs;
-
-    Dir(const string& name) : name(name), listed(false) {}
-
-    void addFile(File *file) {
-        files[file->name] = file;
-    }
-
-    void addDir(Dir *dir) {
-        dirs[dir->name] = dir;
-    }
-
-    File* getFile(const string& name) {
-        auto it = files.find(name);
-        if (it == files.end()) return nullptr;
-        return it->second;
-    }
-
-    Dir* getDir(const string& name) {
-        auto it = dirs.find(name);
-        if (it == dirs.end()) return nullptr;
-        return it->second;
-    }
-};
-
-class Context {
-public:
-    Context();
-    ~Context();
-    Camera *camera() { return camera_; }
-    GPContext *context() { return context_; }
-    uid_t uid() { return uid_; }
-    gid_t gid() { return gid_; }
-    Dir& root() { return root_; }
-
-private:
-    Camera *camera_;
-    GPContext *context_;
-    CameraAbilitiesList *abilities_;
-    int debug_func_id_;
-
-    uid_t uid_;
-    gid_t gid_;
-
-    string directory_;
-    Dir root_;
-};
-
-Context::Context() : root_("") {
-    context_ = gp_context_new();
-    int ret;
-    if ((ret = gp_camera_new(&camera_)) != GP_OK) {
-        return;
-    }
-    gp_abilities_list_new(&abilities_);
-    gp_abilities_list_load(abilities_, context_);
-    uid_ = getuid();
-    gid_ = getgid();
-}
-
-Context::~Context() {
-    if (abilities_) gp_abilities_list_free(abilities_);
-    if (camera_) gp_camera_unref(camera_);
-    if (context_) gp_context_unref(context_);
-}
-
+static int ListDir(const char *path, Dir *dir, Context *ctx);
 Dir* FindDir(const string& path, Context *ctx);
 File* FindFile(const string& path, Context *ctx);
-
-void Warn(const string& msg) {
-    cerr << msg << endl;
-}
-
-void Debug(const string& msg) {
-    cerr << msg << endl;
-}
-
-static off_t SizeToBlocks(off_t size) {
-    return size / 512 + (size % 512 ? 1 : 0);
-}
-
-static int
-gpresultToErrno(int result)
-{
-   switch (result) {
-   case GP_ERROR:
-      return -EPROTO;
-   case GP_ERROR_BAD_PARAMETERS:
-      return -EINVAL;
-   case GP_ERROR_NO_MEMORY:
-      return -ENOMEM;
-   case GP_ERROR_LIBRARY:
-      return -ENOSYS;
-   case GP_ERROR_UNKNOWN_PORT:
-      return -ENXIO;
-   case GP_ERROR_NOT_SUPPORTED:
-      return -EPROTONOSUPPORT;
-   case GP_ERROR_TIMEOUT:
-      return -ETIMEDOUT;
-   case GP_ERROR_IO:
-   case GP_ERROR_IO_SUPPORTED_SERIAL:
-   case GP_ERROR_IO_SUPPORTED_USB:
-   case GP_ERROR_IO_INIT:
-   case GP_ERROR_IO_READ:
-   case GP_ERROR_IO_WRITE:
-   case GP_ERROR_IO_UPDATE:
-   case GP_ERROR_IO_SERIAL_SPEED:
-   case GP_ERROR_IO_USB_CLEAR_HALT:
-   case GP_ERROR_IO_USB_FIND:
-   case GP_ERROR_IO_USB_CLAIM:
-   case GP_ERROR_IO_LOCK:
-      return -EIO;
-
-   case GP_ERROR_CAMERA_BUSY:
-      return -EBUSY;
-   case GP_ERROR_FILE_NOT_FOUND:
-   case GP_ERROR_DIRECTORY_NOT_FOUND:
-      return -ENOENT;
-   case GP_ERROR_FILE_EXISTS:
-   case GP_ERROR_DIRECTORY_EXISTS:
-      return -EEXIST;
-   case GP_ERROR_PATH_NOT_ABSOLUTE:
-      return -ENOTDIR;
-   case GP_ERROR_CORRUPTED_DATA:
-      return -EIO;
-   case GP_ERROR_CANCEL:
-      return -ECANCELED;
-
-   /* These are pretty dubious mappings. */
-   case GP_ERROR_MODEL_NOT_FOUND:
-      return -EPROTO;
-   case GP_ERROR_CAMERA_ERROR:
-      return -EPERM;
-   case GP_ERROR_OS_FAILURE:
-      return -EPIPE;
-   }
-   return -EINVAL;
-}
 
 /* 
  * Operations
@@ -225,6 +79,7 @@ File* FindFile(const string& path, Context *ctx) {
         Warn("path has no /");
         dir = &ctx->root();
         name = path;
+        if (!dir->listed) ListDir("/", dir, ctx);
     } else {
         string parentPath = path.substr(0, pos + 1);
         dir = FindDir(parentPath, ctx);
@@ -232,8 +87,235 @@ File* FindFile(const string& path, Context *ctx) {
             return nullptr;
         }
         name = path.substr(pos + 1);
+        if (!dir->listed) ListDir(parentPath.c_str(), dir, ctx);
     }
     return dir->getFile(name);
+}
+
+static int Create(const char *path, mode_t mode,
+        struct fuse_file_info *fileInfo) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+
+    const char *dirName = dirname(path);
+    const char *fileName = basename(path);
+
+    Dir *dir = FindDir(dirName, ctx);
+    if (dir == nullptr) {
+        Warn("parent dir does not exist");
+        return -ENOENT;
+    }
+
+    if (dir->getFile(fileName) != nullptr) {
+        return -EEXIST;
+    }
+
+    File *file = new File(fileName);
+    file->changed = true;
+    dir->addFile(file);
+
+    if (file->camFile == nullptr) {
+        const char *dirName = dirname(path);
+        const char *fileName = basename(path);
+        CameraFile *camFile;
+        gp_file_new(&camFile);
+        file->camFile = camFile;
+        cerr << "file's camfile init to " << camFile << endl;
+    }
+
+    FileDesc *fd = new FileDesc();
+    fd->writeable = true;
+    fd->file = file;
+    file->ref++;
+    fileInfo->fh = (uint64_t)fd;
+    return 0;
+}
+
+static int Open(const char *path, struct fuse_file_info *fileInfo) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+    File *file = FindFile(path, ctx);
+    if (file == nullptr) {
+        return -ENOENT;
+    }
+    cerr << "open. file: " << file << endl;
+    if (file->camFile == nullptr) {
+        const char *dirName = dirname(path);
+        const char *fileName = basename(path);
+        CameraFile *camFile;
+        gp_file_new(&camFile);
+        int ret = gp_camera_file_get(ctx->camera(), dirName, fileName,
+                GP_FILE_TYPE_NORMAL, camFile, ctx->context());
+        if (ret != GP_OK) {
+            gp_file_unref(camFile);
+            return gpresultToErrno(ret);
+        }
+        file->camFile = camFile;
+        cerr << "file's camfile init to " << camFile << endl;
+    }
+    FileDesc *fd = new FileDesc();
+    int mode = fileInfo->flags & 3;
+    if (mode == O_RDONLY) {
+        fd->writeable = false;
+    } else {
+        fd->writeable = true;
+    }
+    fd->file = file;
+    file->ref++;
+    fileInfo->fh = (uint64_t)fd;
+    return 0;
+}
+
+static int Release(const char *path, struct fuse_file_info *fileInfo) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+    FileDesc *fd = (FileDesc *)fileInfo->fh;
+    File *file = fd->file;
+    delete fd;
+    file->ref--;
+
+    if (file->changed) {
+        if (file->buf == nullptr) {
+            Error("buf freed while still changed!");
+            return 0;
+        }
+
+        int ret = gp_file_set_data_and_size(file->camFile, file->buf, file->size);
+        if (ret != GP_OK) {
+            return gpresultToErrno(ret);
+        }
+
+        const char *dirName = dirname(path);
+        const char *fileName = basename(path);
+        ret = gp_camera_file_delete(ctx->camera(), dirName, fileName,
+                ctx->context());
+        if (ret != GP_OK) {
+            Warn(string("fail to delete ") + path);
+        }
+        ret = gp_camera_folder_put_file(ctx->camera(), dirName, fileName,
+                GP_FILE_TYPE_NORMAL, file->camFile, ctx->context());
+        if (ret != GP_OK) {
+            return gpresultToErrno(ret);
+        }
+        file->buf = nullptr;
+        file->changed = false;
+    }
+
+    if (file->ref == 0) {
+        gp_file_unref(file->camFile);
+        file->camFile = nullptr;
+    }
+    return 0;
+}
+
+static int ReadWholeFile(File *file) {
+    const char *data;
+    unsigned long dataSize;
+    cerr << "camFile: " << file->camFile << endl;
+    int ret = gp_file_get_data_and_size(file->camFile, &data, &dataSize);
+    if (ret == GP_OK) {
+        file->buf = new char[dataSize];
+        file->size = dataSize;
+        file->changed = false;
+        memcpy(file->buf, data, dataSize);
+        return 0;
+    } else {
+        return gpresultToErrno(ret);
+    }
+}
+
+static int Read(const char *path, char *buf, size_t size, off_t offset,
+        struct fuse_file_info *fileInfo) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+
+    FileDesc *fd = (FileDesc *)fileInfo->fh;
+    File *file = fd->file;
+
+    cerr << "file: " << file << endl;
+    if (file->buf == nullptr) {
+        int ret = ReadWholeFile(file);
+        if (ret != 0) return ret;
+    }
+
+    if (offset < file->size) {
+        if (offset + size > file->size) {
+            size = file->size - offset;
+        }
+        memcpy(buf, file->buf + offset, size);
+        return size;
+    } else {
+        return 0;
+    }
+}
+
+static int Write(const char *path, const char *buf, size_t size, off_t offset,
+        struct fuse_file_info *fileInfo) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+
+    FileDesc *fd = (FileDesc *)fileInfo->fh;
+    File *file = fd->file;
+
+    if (file->buf == nullptr) {
+        int ret = ReadWholeFile(file);
+        if (ret != 0) return ret;
+    }
+
+    if (offset + size > file->size) {
+        char *newBuf = (char*)realloc(file->buf, offset + size);
+        if (newBuf == nullptr) {
+            return -EFBIG;
+        }
+        file->size = offset + size;
+        file->buf = newBuf;
+    }
+    memcpy(file->buf + offset, buf, size);
+    file->changed = true;
+    return size;
+}
+
+static int Flush(const char *path, struct fuse_file_info *fileInfo) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+
+    FileDesc *fd = (FileDesc *)fileInfo->fh;
+    File *file = fd->file;
+
+    return 0;
+}
+
+static int Truncate(const char *path, off_t size) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+
+    File *file = FindFile(path, ctx);
+
+    if (file->size > size) {
+        size = file->size;
+    }
+
+    return 0;
+}
+
+static int Unlink(const char *path) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+    const char *dirName = dirname(path);
+    const char *fileName = basename(path);
+
+    Dir *dir = FindDir(dirName, ctx);
+    File *file = FindFile(path, ctx);
+
+    if (dir == nullptr || file == nullptr) {
+        return -ENOENT;
+    }
+
+    if (file->ref > 0) {
+        return -EBUSY;
+    }
+
+    int ret = gp_camera_file_delete(ctx->camera(), dirName, fileName,
+            ctx->context());
+    if (ret != GP_OK) {
+        return gpresultToErrno(ret);
+    }
+
+    dir->removeFile(file);
+    delete file;
+    return 0;
 }
 
 /*
@@ -242,11 +324,8 @@ File* FindFile(const string& path, Context *ctx) {
 
 Dir* FindDir(const string& path, Context *ctx) {
     Dir* dir = &ctx->root();
+    string dirPath = "/";
     Debug("finddir: " + path);
-
-    if (path == "/") {
-        return dir;
-    }
 
     int last;
     if (path[0] == '/') {
@@ -259,9 +338,13 @@ Dir* FindDir(const string& path, Context *ctx) {
         int next = path.find('/', last + 1);
         if (next == string::npos) {
             string name = path.substr(last + 1);
+            Debug("last child: " + name);
             if (name == "") {
                 Debug("return self dir: " + dir->name);
                 return dir;
+            }
+            if (!dir->listed) {
+                ListDir(dirPath.c_str(), dir, ctx);
             }
             return dir->getDir(name);
         }
@@ -272,25 +355,20 @@ Dir* FindDir(const string& path, Context *ctx) {
             last = next;
             continue;
         }
+        if (!dir->listed) {
+            ListDir(dirPath.c_str(), dir, ctx);
+        }
         dir = dir->getDir(name);
         if (dir == nullptr) {
             return nullptr;
         }
+        dirPath = dirPath + "/" + name;
         last = next;
     }
 }
 
-static int Readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-        off_t offset, struct fuse_file_info *fileInfo) {
-    Context *ctx = (Context *)fuse_get_context()->private_data;
-    Dir *dir = FindDir(path, ctx);
-    if (dir == nullptr) {
-        return -ENOENT;
-    }
-    dir->listed = true;
-
-    filler(buf, ".", NULL, 0);
-    filler(buf, "..", NULL, 0);
+static int ListDir(const char *path, Dir *dir, Context *ctx) {
+    // XXX: Dir should know its path
 
     CameraList *list = NULL;
     gp_list_new(&list);
@@ -303,18 +381,8 @@ static int Readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     }
 
     for (int i = 0; i < gp_list_count(list); i++) {
-        struct stat *st;
         const char *name;
-
-        st = new struct stat();
-        st->st_mode = S_IFDIR | 0755;
-        st->st_nlink = 2;
-        st->st_uid = ctx->uid();
-        st->st_gid = ctx->gid();
-
         gp_list_get_name(list, i, &name);
-        filler(buf, name, st, 0);
-        
         unique_ptr<Dir> subDir(new Dir(name));
         dir->addDir(subDir.release());
         Debug(string("child dir : ") + name + " (" + path + ")");
@@ -333,7 +401,6 @@ static int Readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     }
 
     for (int i = 0; i < gp_list_count(list); i++) {
-        struct stat *st;
         const char *name;
         CameraFileInfo info;
 
@@ -345,24 +412,101 @@ static int Readdir(const char *path, void *buf, fuse_fill_dir_t filler,
             return gpresultToErrno(ret);
         }
 
-        st = new struct stat();
-        st->st_mode = S_IFREG | 0644;
-        st->st_nlink = 1;
-        st->st_uid = ctx->uid();
-        st->st_gid = ctx->gid();
-        st->st_size = info.file.size;
-        st->st_mtime = info.file.mtime;
-        st->st_blocks = (info.file.size / 512) +
-            (info.file.size % 512 > 0 ? 1 : 0);
-
-        filler(buf, name, st, 0);
-
         unique_ptr<File> file(new File(name, info));
         dir->addFile(file.release());
         Debug(string("child file: ") + name + " (" + path + ")");
     }
 
     gp_list_free(list);
+    dir->listed = true;
+    return 0;
+}
+
+static int Readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+        off_t offset, struct fuse_file_info *fileInfo) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+    Dir *dir = FindDir(path, ctx);
+    if (dir == nullptr) {
+        return -ENOENT;
+    }
+    if (!dir->listed) {
+        int ret = ListDir(path, dir, ctx);
+        if (ret) return ret;
+    }
+
+    filler(buf, ".", NULL, 0);
+    filler(buf, "..", NULL, 0);
+
+    for (auto it = dir->dirs.begin(); it != dir->dirs.end(); it++) {
+        Dir *subDir = it->second;
+
+        struct stat st;
+        st.st_mode = S_IFDIR | 0755;
+        st.st_nlink = 2;
+        st.st_uid = ctx->uid();
+        st.st_gid = ctx->gid();
+
+        filler(buf, subDir->name.c_str(), &st, 0);
+    }
+
+    for (auto it = dir->files.begin(); it != dir->files.end(); it++) {
+        File *file = it->second;
+
+        struct stat st;
+        st.st_mode = S_IFREG | 0644;
+        st.st_nlink = 1;
+        st.st_uid = ctx->uid();
+        st.st_gid = ctx->gid();
+        st.st_size = file->size;
+        st.st_mtime = file->mtime;
+        st.st_blocks = (file->size / 512) +
+            (file->size % 512 > 0 ? 1 : 0);
+
+        filler(buf, file->name.c_str(), &st, 0);
+    }
+
+    return 0;
+}
+
+static int Mkdir(const char *path, mode_t mode) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+    const char *parentName = dirname(path);
+    const char *dirName = basename(path);
+
+    Dir *parent = FindDir(parentName, ctx);
+    if (parent == nullptr) {
+        return -ENOENT;
+    }
+
+    int ret = gp_camera_folder_make_dir(ctx->camera(), parentName,
+            dirName, ctx->context());
+    if (ret != GP_OK) {
+        return gpresultToErrno(ret);
+    }
+    Dir *dir = new Dir(dirName);
+    parent->addDir(dir);
+    return 0;
+}
+
+static int Rmdir(const char *path) {
+    Context *ctx = (Context *)fuse_get_context()->private_data;
+    const char *parentName = dirname(path);
+    const char *dirName = basename(path);
+
+    Dir *parent = FindDir(parentName, ctx);
+    Dir *dir = FindDir(path, ctx);
+    if (parent == nullptr || dir == nullptr) {
+        return -ENOENT;
+    }
+
+    int ret = gp_camera_folder_remove_dir(ctx->camera(), parentName, dirName,
+            ctx->context());
+    if (ret != GP_OK) {
+        return gpresultToErrno(ret);
+    }
+
+    parent->removeDir(dir);
+    delete dir;
     return 0;
 }
 
@@ -424,13 +568,24 @@ static fuse_operations GPhotoFS2_Operations = {
 
     .chown = Chown,
     .chmod = Chmod,
+    .truncate = Truncate,
 
     .getattr = Getattr,
 
     .readdir = Readdir,
+    .mkdir = Mkdir,
+    .rmdir = Rmdir,
+
+    .create = Create,
+    .open = Open,
+    .release = Release,
+    .unlink = Unlink,
+    .read = Read,
+    .write = Write,
+    .flush = Flush,
 };
 
 int main(int argc, char **argv) {
     setlocale (LC_CTYPE,"en_US.UTF-8"); /* for ptp2 driver to convert to utf-8 */
-    fuse_main(argc, argv, &GPhotoFS2_Operations, NULL);
+    return fuse_main(argc, argv, &GPhotoFS2_Operations, NULL);
 }

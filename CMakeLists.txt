@@ -15,5 +15,9 @@ include_directories(${GPHOTO2_INCLUDE_DIRS})
 
 link_directories(${FUSE_LIBDIR} ${GPHOTO2_LIBDIR})
 add_executable(gphotofs2
-    gphotofs2.cpp)
+    gphotofs2.cpp
+    dir.cpp
+    utils.cpp
+    context.cpp)
 target_link_libraries(gphotofs2 ${FUSE_LIBRARIES} ${GPHOTO2_LIBRARIES})
+set_property(TARGET gphotofs2 PROPERTY CXX_STANDARD 11)
