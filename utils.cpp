@@ -4,6 +4,8 @@
 #include <sys/time.h>
 using namespace std;
 
+static bool debug = false;
+
 int Now() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -19,7 +21,9 @@ void Warn(const string& msg) {
 }
 
 void Debug(const string& msg) {
-    cerr << "DBG: " << msg << endl;
+    if (debug) {
+        cerr << "DBG: " << msg << endl;
+    }
 }
 
 off_t SizeToBlocks(off_t size) {
@@ -27,6 +31,7 @@ off_t SizeToBlocks(off_t size) {
 }
 
 int gpresultToErrno(int result) {
+   Error(string("gphoto error ") + to_string(result));
    switch (result) {
    case GP_ERROR:
       return -EPROTO;
