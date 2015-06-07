@@ -12,10 +12,12 @@ Context::Context() : root_("") {
     gp_abilities_list_load(abilities_, context_);
     uid_ = getuid();
     gid_ = getgid();
+    statCache_ = nullptr;
 }
 
 Context::~Context() {
     if (abilities_) gp_abilities_list_free(abilities_);
     if (camera_) gp_camera_unref(camera_);
     if (context_) gp_context_unref(context_);
+    if (statCache_) delete statCache_;
 }

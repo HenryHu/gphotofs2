@@ -3,6 +3,7 @@
 
 #include <string>
 #include <gphoto2/gphoto2.h>
+#include <fuse.h>
 
 #include "dir.h"
 
@@ -15,6 +16,11 @@ public:
     uid_t uid() { return uid_; }
     gid_t gid() { return gid_; }
     Dir& root() { return root_; }
+    struct statvfs *statCache() { return statCache_; }
+    void cacheStat(struct statvfs *newStat) {
+        if (statCache_ == nullptr) statCache_ = new struct statvfs();
+        *statCache_ = *newStat;
+    }
 
 private:
     Camera *camera_;
@@ -27,6 +33,7 @@ private:
 
     std::string directory_;
     Dir root_;
+    struct statvfs *statCache_;
 };
 
 

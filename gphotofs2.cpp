@@ -521,6 +521,10 @@ static int Statfs(const char *path, struct statvfs *stat) {
     res = gp_camera_get_storageinfo(ctx->camera(),
             &storageInfo, &numInfo, ctx->context());
     if (res != GP_OK) {
+        if (ctx->statCache()) {
+            *stat = *ctx->statCache();
+            return 0;
+        }
         return gpresultToErrno(res);
     }
     if (numInfo == 0) {
@@ -536,6 +540,7 @@ static int Statfs(const char *path, struct statvfs *stat) {
         stat->f_files = -1;
         stat->f_ffree = -1;
     }
+    ctx->cacheStat(stat);
     return 0;
 }
 
