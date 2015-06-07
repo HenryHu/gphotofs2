@@ -40,19 +40,12 @@ File* FindFile(const string& path, Context *ctx);
 static int Getattr(const char *path, struct stat *st) {
     Context *ctx = (Context*)fuse_get_context()->private_data;
 
-    st->st_uid = ctx->uid();
-    st->st_gid = ctx->gid();
-
-    if (strcmp(path, "/") == 0) {
-        st->st_mode = S_IFDIR | 0755;
-        st->st_nlink = 2;
-        return 0;
-    }
-
     Dir *dir = FindDir(path, ctx);
     if (dir != nullptr) {
         st->st_mode = S_IFDIR | 0755;
         st->st_nlink = 2;
+        st->st_uid = ctx->uid();
+        st->st_gid = ctx->gid();
         return 0;
     }
 
@@ -63,6 +56,8 @@ static int Getattr(const char *path, struct stat *st) {
         st->st_size = file->size;
         st->st_blocks = SizeToBlocks(file->size);
         st->st_mtime = file->mtime;
+        st->st_uid = ctx->uid();
+        st->st_gid = ctx->gid();
         return 0;
     }
     return -ENOENT;
