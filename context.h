@@ -4,6 +4,7 @@
 #include <string>
 #include <gphoto2/gphoto2.h>
 #include <fuse.h>
+#include <mutex>
 
 #include "dir.h"
 
@@ -17,6 +18,7 @@ public:
     gid_t gid() { return gid_; }
     Dir& root() { return root_; }
     struct statvfs *statCache() { return statCache_; }
+    std::mutex& lock() { return lock_; }
     void cacheStat(struct statvfs *newStat) {
         if (statCache_ == nullptr) statCache_ = new struct statvfs();
         *statCache_ = *newStat;
@@ -34,6 +36,8 @@ private:
     std::string directory_;
     Dir root_;
     struct statvfs *statCache_;
+    // giant lock!
+    std::mutex lock_;
 };
 
 

@@ -39,6 +39,7 @@ File* FindFile(const string& path, Context *ctx);
 
 static int Getattr(const char *path, struct stat *st) {
     Context *ctx = (Context*)fuse_get_context()->private_data;
+    lock_guard<mutex> guard(ctx->lock());
 
     Dir *dir = FindDir(path, ctx);
     if (dir != nullptr) {
@@ -94,6 +95,7 @@ static int Create(const char *path, mode_t mode,
     const char *dirName = dirname(path);
     const char *fileName = basename(path);
 
+    lock_guard<mutex> guard(ctx->lock());
     Dir *dir = FindDir(dirName, ctx);
     if (dir == nullptr) {
         Warn("parent dir does not exist");
@@ -126,10 +128,12 @@ static int Create(const char *path, mode_t mode,
 
 static int Open(const char *path, struct fuse_file_info *fileInfo) {
     Context *ctx = (Context *)fuse_get_context()->private_data;
+    lock_guard<mutex> guard(ctx->lock());
     File *file = FindFile(path, ctx);
     if (file == nullptr) {
         return -ENOENT;
     }
+    lock_guard<mutex> fileGuard(file->lock);
     if (file->camFile == nullptr) {
         const char *dirName = dirname(path);
         const char *fileName = basename(path);
@@ -158,8 +162,10 @@ static int Open(const char *path, struct fuse_file_info *fileInfo) {
 
 static int Release(const char *path, struct fuse_file_info *fileInfo) {
     Context *ctx = (Context *)fuse_get_context()->private_data;
+    lock_guard<mutex> guard(ctx->lock());
     FileDesc *fd = (FileDesc *)fileInfo->fh;
     File *file = fd->file;
+    lock_guard<mutex> fileGuard(file->lock);
     delete fd;
     file->ref--;
 
@@ -218,6 +224,7 @@ static int Read(const char *path, char *buf, size_t size, off_t offset,
 
     FileDesc *fd = (FileDesc *)fileInfo->fh;
     File *file = fd->file;
+    lock_guard<mutex> guard(file->lock);
 
     if (file->buf == nullptr) {
         int ret = ReadWholeFile(file);
@@ -241,6 +248,7 @@ static int Write(const char *path, const char *buf, size_t size, off_t offset,
 
     FileDesc *fd = (FileDesc *)fileInfo->fh;
     File *file = fd->file;
+    lock_guard<mutex> guard(file->lock);
 
     if (file->buf == nullptr) {
         int ret = ReadWholeFile(file);
@@ -273,6 +281,7 @@ static int Truncate(const char *path, off_t size) {
     Context *ctx = (Context *)fuse_get_context()->private_data;
 
     File *file = FindFile(path, ctx);
+    lock_guard<mutex> guard(file->lock);
 
     if (file->size > size) {
         size = file->size;
@@ -286,6 +295,7 @@ static int Unlink(const char *path) {
     const char *dirName = dirname(path);
     const char *fileName = basename(path);
 
+    lock_guard<mutex> guard(ctx->lock());
     Dir *dir = FindDir(dirName, ctx);
     File *file = FindFile(path, ctx);
 
@@ -293,6 +303,8 @@ static int Unlink(const char *path) {
         return -ENOENT;
     }
 
+    unique_lock<mutex> fileGuard(file->lock);
+    file->lock.lock();
     if (file->ref > 0) {
         return -EBUSY;
     }
@@ -304,6 +316,7 @@ static int Unlink(const char *path) {
     }
 
     dir->removeFile(file);
+    fileGuard.unlock();
     delete file;
     return 0;
 }
@@ -415,6 +428,7 @@ static int ListDir(const char *path, Dir *dir, Context *ctx) {
 static int Readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         off_t offset, struct fuse_file_info *fileInfo) {
     Context *ctx = (Context *)fuse_get_context()->private_data;
+    lock_guard<mutex> guard(ctx->lock());
     Dir *dir = FindDir(path, ctx);
     if (dir == nullptr) {
         return -ENOENT;
@@ -462,6 +476,7 @@ static int Mkdir(const char *path, mode_t mode) {
     Context *ctx = (Context *)fuse_get_context()->private_data;
     const char *parentName = dirname(path);
     const char *dirName = basename(path);
+    lock_guard<mutex> guard(ctx->lock());
 
     Dir *parent = FindDir(parentName, ctx);
     if (parent == nullptr) {
@@ -482,11 +497,15 @@ static int Rmdir(const char *path) {
     Context *ctx = (Context *)fuse_get_context()->private_data;
     const char *parentName = dirname(path);
     const char *dirName = basename(path);
+    lock_guard<mutex> guard(ctx->lock());
 
     Dir *parent = FindDir(parentName, ctx);
     Dir *dir = FindDir(path, ctx);
     if (parent == nullptr || dir == nullptr) {
         return -ENOENT;
+    }
+    if (!dir->empty()) {
+        return -ENOTEMPTY;
     }
 
     int ret = gp_camera_folder_remove_dir(ctx->camera(), parentName, dirName,

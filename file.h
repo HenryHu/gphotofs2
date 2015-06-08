@@ -3,6 +3,7 @@
 
 #include <string>
 #include <gphoto2/gphoto2.h>
+#include <mutex>
 
 #include "utils.h"
 
@@ -15,6 +16,7 @@ struct File {
     int mtime;
     int ref;
     bool changed;
+    std::mutex lock;
 
     File(const std::string& name, const CameraFileInfo& info) {
         this->name = name;
