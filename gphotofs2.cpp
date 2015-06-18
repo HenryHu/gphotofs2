@@ -91,11 +91,11 @@ File* FindFile(const string& path, Context *ctx) {
 static int Create(const char *path, mode_t mode,
         struct fuse_file_info *fileInfo) {
     Context *ctx = (Context *)fuse_get_context()->private_data;
+    lock_guard<mutex> guard(ctx->lock());
 
     const char *dirName = dirname(path);
     const char *fileName = basename(path);
 
-    lock_guard<mutex> guard(ctx->lock());
     Dir *dir = FindDir(dirName, ctx);
     if (dir == nullptr) {
         Warn("parent dir does not exist");
@@ -292,10 +292,10 @@ static int Truncate(const char *path, off_t size) {
 
 static int Unlink(const char *path) {
     Context *ctx = (Context *)fuse_get_context()->private_data;
+    lock_guard<mutex> guard(ctx->lock());
     const char *dirName = dirname(path);
     const char *fileName = basename(path);
 
-    lock_guard<mutex> guard(ctx->lock());
     Dir *dir = FindDir(dirName, ctx);
     File *file = FindFile(path, ctx);
 
@@ -474,9 +474,9 @@ static int Readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 static int Mkdir(const char *path, mode_t mode) {
     Context *ctx = (Context *)fuse_get_context()->private_data;
+    lock_guard<mutex> guard(ctx->lock());
     const char *parentName = dirname(path);
     const char *dirName = basename(path);
-    lock_guard<mutex> guard(ctx->lock());
 
     Dir *parent = FindDir(parentName, ctx);
     if (parent == nullptr) {
@@ -495,9 +495,9 @@ static int Mkdir(const char *path, mode_t mode) {
 
 static int Rmdir(const char *path) {
     Context *ctx = (Context *)fuse_get_context()->private_data;
+    lock_guard<mutex> guard(ctx->lock());
     const char *parentName = dirname(path);
     const char *dirName = basename(path);
-    lock_guard<mutex> guard(ctx->lock());
 
     Dir *parent = FindDir(parentName, ctx);
     Dir *dir = FindDir(path, ctx);
