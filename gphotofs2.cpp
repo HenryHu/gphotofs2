@@ -304,7 +304,6 @@ static int Unlink(const char *path) {
     }
 
     unique_lock<mutex> fileGuard(file->lock);
-    file->lock.lock();
     if (file->ref > 0) {
         return -EBUSY;
     }
