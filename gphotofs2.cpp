@@ -184,7 +184,8 @@ static int Release(const char *path, struct fuse_file_info *fileInfo) {
         ret = gp_camera_file_delete(ctx->camera(), dirName, fileName,
                 ctx->context());
         if (ret != GP_OK) {
-            Warn(string("fail to delete ") + path);
+            // For newly created file, this is expected
+//            Warn(string("fail to delete ") + path);
         }
         ret = gp_camera_folder_put_file(ctx->camera(), dirName, fileName,
                 GP_FILE_TYPE_NORMAL, file->camFile, ctx->context());
