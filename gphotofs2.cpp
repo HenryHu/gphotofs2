@@ -171,8 +171,7 @@ static int Release(const char *path, struct fuse_file_info *fileInfo) {
 
     if (file->changed) {
         if (file->buf == nullptr) {
-            Error("buf freed while still changed!");
-            return 0;
+            file->buf = new char[1];
         }
 
         int ret = gp_file_set_data_and_size(file->camFile, file->buf, file->size);
